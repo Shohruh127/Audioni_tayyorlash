@@ -86,7 +86,23 @@ class BatchAudioProcessorTests(unittest.TestCase):
                 text=True,
             )
 
-    def test_process_directory_logs_failures_and_continues(self):
+    @patch("batch_audio_processor.subprocess.run")
+    def test_convert_audio_file_skips_existing_non_empty_output(self, run_mock):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "track.mp3"
+            output = root / "out" / "track.wav"
+            source.write_bytes(b"audio")
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(b"existing")
+
+            result = processor.convert_audio_file(str(source), str(output))
+
+            self.assertTrue(result.success)
+            self.assertTrue(result.skipped)
+            run_mock.assert_not_called()
+
+    def test_process_directory_logs_failures_and_continues_immediately(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             input_dir = root / "input"
@@ -117,19 +133,22 @@ class BatchAudioProcessorTests(unittest.TestCase):
                 def submit(self, fn, *args, **kwargs):
                     return FakeFuture(fake_convert(*args, **kwargs))
 
-            processed, failed = processor.process_directory(
-                input_dir=input_dir,
-                output_dir=output_dir,
-                error_log_path=error_log,
-                workers=2,
-                progress_factory=lambda iterable, **_: iterable,
-                executor_cls=ExecutorWithFakeConvert,
-                completion_iterator=lambda futures: futures,
-            )
+            with patch("batch_audio_processor.append_error_log") as append_error_log:
+                processed, failed = processor.process_directory(
+                    input_dir=input_dir,
+                    output_dir=output_dir,
+                    error_log_path=error_log,
+                    workers=2,
+                    progress_factory=lambda iterable, **_: iterable,
+                    executor_cls=ExecutorWithFakeConvert,
+                    completion_iterator=lambda futures: futures,
+                )
 
             self.assertEqual(processed, 2)
             self.assertEqual(failed, 1)
-            self.assertIn("broken.wav", error_log.read_text(encoding="utf-8"))
+            append_error_log.assert_called_once()
+            logged_failure = append_error_log.call_args.args[1]
+            self.assertIn("broken.wav", logged_failure.source_path)
 
     @patch("batch_audio_processor.subprocess.run")
     def test_convert_audio_file_returns_failure_result_for_called_process_error(self, run_mock):
@@ -143,6 +162,15 @@ class BatchAudioProcessorTests(unittest.TestCase):
 
         self.assertFalse(result.success)
         self.assertIn("invalid data", result.error)
+
+    def test_determine_worker_count_leaves_two_cpu_cores_free(self):
+        with patch("batch_audio_processor.os.cpu_count", return_value=8):
+            self.assertEqual(processor.determine_worker_count(None), 6)
+
+        with patch("batch_audio_processor.os.cpu_count", return_value=1):
+            self.assertEqual(processor.determine_worker_count(None), 1)
+
+        self.assertEqual(processor.determine_worker_count(3), 3)
 
 
 if __name__ == "__main__":

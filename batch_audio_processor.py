@@ -6,7 +6,7 @@ import subprocess
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Iterable, Optional, Sequence
+from typing import Callable, Iterable, Optional
 
 try:
     from tqdm import tqdm as tqdm_progress
@@ -33,6 +33,7 @@ class ConversionResult:
     output_path: str
     success: bool
     error: Optional[str] = None
+    skipped: bool = False
 
 
 def _is_relative_to(path: Path, parent: Path) -> bool:
@@ -65,10 +66,23 @@ def build_output_path(input_path: Path, input_dir: Path, output_dir: Path) -> Pa
     return output_dir / relative_path.with_suffix(".wav")
 
 
+def is_valid_output_file(output_path: Path) -> bool:
+    return output_path.exists() and output_path.stat().st_size > 0
+
+
 def convert_audio_file(source_path: str, output_path: str) -> ConversionResult:
     source = Path(source_path)
     output = Path(output_path)
     output.parent.mkdir(parents=True, exist_ok=True)
+
+    # Skip work if a previous run has already produced a non-empty output file.
+    if is_valid_output_file(output):
+        return ConversionResult(
+            source_path=str(source),
+            output_path=str(output),
+            success=True,
+            skipped=True,
+        )
 
     command = [
         "ffmpeg",
@@ -102,14 +116,16 @@ def convert_audio_file(source_path: str, output_path: str) -> ConversionResult:
     return ConversionResult(source_path=str(source), output_path=str(output), success=True)
 
 
-def write_error_log(error_log_path: Path, failures: Sequence[ConversionResult]) -> None:
-    if not failures:
-        return
-
+def append_error_log(error_log_path: Path, failure: ConversionResult) -> None:
     error_log_path.parent.mkdir(parents=True, exist_ok=True)
     with error_log_path.open("a", encoding="utf-8") as error_log:
-        for failure in failures:
-            error_log.write(f"{failure.source_path}\t{failure.error or 'Unknown error'}\n")
+        error_log.write(f"{failure.source_path}\t{failure.error or 'Unknown error'}\n")
+
+
+def determine_worker_count(requested_workers: Optional[int]) -> int:
+    if requested_workers is not None:
+        return requested_workers
+    return max(1, (os.cpu_count() or 2) - 2)
 
 
 def _resolve_progress_factory(
@@ -142,31 +158,41 @@ def process_directory(
     if not files:
         return 0, 0
 
-    failures: list[ConversionResult] = []
-    max_workers = workers or os.cpu_count() or 1
+    failed_count = 0
+    max_workers = determine_worker_count(workers)
 
     with executor_cls(max_workers=max_workers) as executor:
-        futures = [
+        future_to_source_path = {
             executor.submit(
                 convert_audio_file,
                 str(source_path),
                 str(build_output_path(source_path, input_dir, output_dir)),
-            )
+            ): str(source_path)
             for source_path in files
-        ]
+        }
 
         for future in progress(
-            completion_iterator(futures),
-            total=len(futures),
+            completion_iterator(future_to_source_path),
+            total=len(future_to_source_path),
             desc="Processing audio files",
             unit="file",
         ):
-            result = future.result()
-            if not result.success:
-                failures.append(result)
+            source_path = future_to_source_path[future]
+            try:
+                result = future.result()
+            except Exception as exc:  # pragma: no cover - defensive guard
+                result = ConversionResult(
+                    source_path=source_path,
+                    output_path=str(build_output_path(Path(source_path), input_dir, output_dir)),
+                    success=False,
+                    error=str(exc) or exc.__class__.__name__,
+                )
 
-    write_error_log(error_log_path, failures)
-    return len(files), len(failures)
+            if not result.success:
+                failed_count += 1
+                append_error_log(error_log_path, result)
+
+    return len(files), failed_count
 
 
 def parse_args() -> argparse.Namespace:
@@ -179,7 +205,7 @@ def parse_args() -> argparse.Namespace:
         "--workers",
         type=int,
         default=None,
-        help="Number of worker processes to use. Defaults to all CPU cores.",
+        help="Number of worker processes to use. Defaults to leaving two CPU cores free.",
     )
     parser.add_argument(
         "--error-log",
@@ -200,6 +226,9 @@ def main() -> int:
 
     if output_dir.resolve() == input_dir.resolve():
         raise SystemExit("Output directory must be different from the input directory.")
+
+    if args.workers is not None and args.workers < 1:
+        raise SystemExit("--workers must be a positive integer.")
 
     processed_count, failed_count = process_directory(
         input_dir=input_dir,

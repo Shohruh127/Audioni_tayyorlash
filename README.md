@@ -29,5 +29,7 @@ The script:
 - scans the input directory recursively for supported audio files
 - converts each file to `.wav` using 16 kHz sample rate, mono channel, and 16-bit PCM encoding
 - preserves the relative file name/path inside the output directory
-- logs failed files to `error_logs.txt` and continues processing the remaining files
+- skips conversion when a valid non-empty target `.wav` already exists, making reruns resumable
+- defaults to leaving two CPU cores free for the OS when `--workers` is not provided
+- logs failed files to `error_logs.txt` immediately and continues processing the remaining files
 - shows batch progress with `tqdm`
