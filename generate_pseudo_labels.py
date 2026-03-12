@@ -56,9 +56,9 @@ def normalize_text(text: str) -> str:
     return " ".join(no_unicode_punctuation.lower().split())
 
 
-def iter_batches(items: Sequence[dict[str, str]], batch_size: int) -> Iterator[Sequence[dict[str, str]]]:
-    for index in range(0, len(items), batch_size):
-        yield items[index : index + batch_size]
+def iter_batches(rows: Sequence[dict[str, str]], batch_size: int) -> Iterator[Sequence[dict[str, str]]]:
+    for batch_start in range(0, len(rows), batch_size):
+        yield rows[batch_start : batch_start + batch_size]
 
 
 def resolve_audio_path(metadata_path: Path, file_name: str) -> Path:
@@ -68,11 +68,11 @@ def resolve_audio_path(metadata_path: Path, file_name: str) -> Path:
     return (metadata_path.parent / audio_path).resolve()
 
 
-def get_field_value(item: object, name: str, default: float = 0.0) -> float:
-    if isinstance(item, dict):
-        value = item.get(name, default)
+def get_field_value(obj: object, name: str, default: float = 0.0) -> float:
+    if isinstance(obj, dict):
+        value = obj.get(name, default)
     else:
-        value = getattr(item, name, default)
+        value = getattr(obj, name, default)
     try:
         return float(value)
     except (TypeError, ValueError):
