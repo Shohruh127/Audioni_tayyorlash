@@ -8,8 +8,12 @@ This repository includes a GPU-aware speaker diarization script at
 ### What it does
 
 - Loads the `pyannote/speaker-diarization-3.1` pipeline from Hugging Face
-- Reads a folder of `.wav` files
+- Reads a folder of standardized 16kHz `.wav` files
 - Uses CUDA automatically when available, otherwise falls back to CPU
+- Clears GPU and CPU memory after every file to reduce long-loop memory growth
+- Skips files that already have a non-empty JSON output so interrupted runs can resume
+- Logs per-file failures to `diarization_errors.txt` and continues processing
+- Shows batch progress with `tqdm`
 - Writes one JSON file per audio file with entries like:
 
 ```json
@@ -25,7 +29,7 @@ This repository includes a GPU-aware speaker diarization script at
 ### Authentication
 
 Set a Hugging Face token in an environment variable before running the script.
-The script checks `HF_TOKEN` first and then `HUGGINGFACE_TOKEN`.
+The script requires `HF_TOKEN`.
 
 ### Example
 
