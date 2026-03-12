@@ -11,6 +11,7 @@ from typing import Any, Callable, Iterable
 
 MODEL_ID = "pyannote/speaker-diarization-3.1"
 ERROR_LOG_FILENAME = "diarization_errors.txt"
+TIMESTAMP_PRECISION = 3
 
 
 @dataclass
@@ -51,8 +52,8 @@ def diarization_to_records(diarization: Any) -> list[dict[str, float | str]]:
         records.append(
             {
                 "speaker": speaker,
-                "start": round(float(turn.start), 3),
-                "end": round(float(turn.end), 3),
+                "start": round(float(turn.start), TIMESTAMP_PRECISION),
+                "end": round(float(turn.end), TIMESTAMP_PRECISION),
             }
         )
     return records
@@ -118,7 +119,13 @@ def iter_with_progress(
     if progress_factory is not None:
         return progress_factory(items, total=len(items), desc="Diarizing", unit="file")
 
-    from tqdm import tqdm
+    try:
+        from tqdm import tqdm
+    except ImportError as exc:
+        raise RuntimeError(
+            "tqdm is required to display diarization progress. Install it in the active "
+            "Python environment before running this script (for example: `pip install tqdm`)."
+        ) from exc
 
     return tqdm(items, total=len(items), desc="Diarizing", unit="file")
 
@@ -142,12 +149,12 @@ def process_folder(
 
     for audio_path in iter_with_progress(wav_files, progress_factory=progress_factory):
         output_path = get_output_path(audio_path, output_dir)
-        try:
-            # Skip files that already have a non-empty JSON result for resumable batch runs.
-            if output_exists_and_not_empty(output_path):
-                skipped += 1
-                continue
+        if output_exists_and_not_empty(output_path):
+            skipped += 1
+            clear_memory(pipeline_context.torch_module, pipeline_context.device)
+            continue
 
+        try:
             diarization = pipeline_context.pipeline(audio_path)
             records = diarization_to_records(diarization)
             output_path.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
@@ -157,7 +164,7 @@ def process_folder(
             append_error_log(error_log_path, audio_path, exc)
             failed += 1
         finally:
-            # Force VRAM and CPU memory cleanup after every file to reduce long-loop leaks.
+            # Force VRAM and CPU memory cleanup after every file iteration, including skips.
             clear_memory(pipeline_context.torch_module, pipeline_context.device)
 
     return processed, skipped, failed

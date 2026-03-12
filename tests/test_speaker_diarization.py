@@ -7,8 +7,8 @@ from unittest import mock
 
 
 MODULE_PATH = Path(
-    "/home/runner/work/Audioni_tayyorlash/Audioni_tayyorlash/scripts/speaker_diarization.py"
-)
+    __file__
+).resolve().parents[1] / "scripts" / "speaker_diarization.py"
 
 
 def load_module():
@@ -29,7 +29,6 @@ class FakeAnnotation:
         self._segments = segments
 
     def itertracks(self, yield_label=False):
-        self.last_yield_label = yield_label
         for start, end, speaker in self._segments:
             yield FakeTurn(start, end), None, speaker
 
@@ -115,8 +114,9 @@ class SpeakerDiarizationTests(unittest.TestCase):
 
             self.assertEqual((processed, skipped, failed), (1, 1, 1))
             self.assertEqual(fake_pipeline.calls, ["b.wav", "c.WAV"])
-            self.assertEqual(fake_torch.cuda.empty_cache_calls, 3)
-            self.assertEqual(mock_collect.call_count, 3)
+            total_files = processed + skipped + failed
+            self.assertEqual(fake_torch.cuda.empty_cache_calls, total_files)
+            self.assertEqual(mock_collect.call_count, total_files)
 
             records = json.loads((output_dir / "b.json").read_text(encoding="utf-8"))
             self.assertEqual(
@@ -129,6 +129,36 @@ class SpeakerDiarizationTests(unittest.TestCase):
             )
             self.assertIn("c.WAV", error_log)
             self.assertIn("CUDA out of memory", error_log)
+
+    def test_process_folder_clears_memory_for_failed_files(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            input_dir = root / "input"
+            output_dir = root / "output"
+            input_dir.mkdir()
+            output_dir.mkdir()
+
+            (input_dir / "broken.wav").write_bytes(b"")
+
+            fake_pipeline = FakePipeline({"broken.wav": ValueError("corrupt wav")})
+            fake_torch = FakeTorchModule()
+            pipeline_context = self.module.PipelineContext(
+                pipeline=fake_pipeline,
+                device=FakeDevice("cuda"),
+                torch_module=fake_torch,
+            )
+
+            with mock.patch.object(self.module.gc, "collect") as mock_collect:
+                processed, skipped, failed = self.module.process_folder(
+                    input_dir=input_dir,
+                    output_dir=output_dir,
+                    pipeline_context=pipeline_context,
+                    progress_factory=lambda items, **_: items,
+                )
+
+            self.assertEqual((processed, skipped, failed), (0, 0, 1))
+            self.assertEqual(fake_torch.cuda.empty_cache_calls, 1)
+            self.assertEqual(mock_collect.call_count, 1)
 
 
 if __name__ == "__main__":
