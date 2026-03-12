@@ -16,7 +16,6 @@ from pydub.silence import detect_silence
 
 MIN_CHUNK_MS = 1_000
 TARGET_CHUNK_MS = 25_000
-MAX_CHUNK_MS = 30_000
 SPLIT_SEARCH_WINDOW_MS = 2_000
 MIN_SILENCE_MS = 300
 
@@ -162,6 +161,13 @@ def load_segments(diarization_path: Path) -> list[Segment]:
 
 
 def resolve_silence_threshold(audio: AudioSegment) -> float:
+    """Choose a conservative silence threshold relative to the local audio level.
+
+    pydub's silence detection expects a dBFS cutoff. We bias the threshold about
+    16 dB below the local average loudness, while clamping it to a practical
+    range for typical spoken-word audio so quiet clips still detect silence
+    without treating normal speech as silence.
+    """
     if not math.isfinite(audio.dBFS):
         return -45.0
     return max(-50.0, min(-10.0, audio.dBFS - 16.0))
@@ -182,13 +188,12 @@ def choose_split_point(turn_audio: AudioSegment, local_start_ms: int, local_end_
             preferred_points = [
                 search_start + ((start + end) // 2)
                 for start, end in silence_ranges
-                if MIN_CHUNK_MS <= search_start + ((start + end) // 2) - local_start_ms <= MAX_CHUNK_MS
+                if MIN_CHUNK_MS
+                <= search_start + ((start + end) // 2) - local_start_ms
+                <= TARGET_CHUNK_MS
             ]
             if preferred_points:
-                return min(
-                    preferred_points,
-                    key=lambda point: (point > target_ms, abs(point - target_ms)),
-                )
+                return min(preferred_points, key=lambda point: abs(point - target_ms))
     return target_ms
 
 
@@ -210,7 +215,7 @@ def split_segment(segment_audio: AudioSegment) -> list[AudioSegment]:
     remainder = segment_audio[local_start_ms:local_end_ms]
     if len(remainder) >= MIN_CHUNK_MS:
         chunks.append(remainder)
-    return [chunk for chunk in chunks if MIN_CHUNK_MS <= len(chunk) <= MAX_CHUNK_MS]
+    return [chunk for chunk in chunks if len(chunk) >= MIN_CHUNK_MS]
 
 
 def process_pair(

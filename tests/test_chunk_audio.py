@@ -26,8 +26,11 @@ class ChunkAudioTests(unittest.TestCase):
             short_turn = Sine(330).to_audio_segment(duration=900)
             audio = long_turn + short_turn
             exported_file = audio.export(audio_path, format="wav")
-            if exported_file is not None:
-                exported_file.close()
+            try:
+                pass
+            finally:
+                if exported_file is not None:
+                    exported_file.close()
 
             diarization = [
                 {"start": 0.0, "end": 35.0, "speaker": "speaker_A"},
