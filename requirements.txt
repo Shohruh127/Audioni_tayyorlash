@@ -1,0 +1,8 @@
+torch
+transformers
+accelerate
+datasets
+evaluate
+jiwer
+peft
+soundfile
