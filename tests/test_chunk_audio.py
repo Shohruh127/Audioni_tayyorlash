@@ -7,11 +7,11 @@ from pathlib import Path
 from pydub import AudioSegment
 from pydub.generators import Sine
 
-from chunk_audio import process_pair, write_metadata
+from chunk_audio import discover_pairs, process_pair, write_metadata
 
 
 class ChunkAudioTests(unittest.TestCase):
-    def test_process_pair_splits_long_turns_and_ignores_short_chunks(self) -> None:
+    def test_process_pair_splits_strictly_at_25_seconds_and_ignores_short_chunks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_path = Path(temp_dir)
             audio_path = temp_path / "session.wav"
@@ -41,21 +41,49 @@ class ChunkAudioTests(unittest.TestCase):
             rows = process_pair(audio_path, diarization_path, output_dir, temp_path)
             self.assertEqual(2, len(rows))
 
-            chunk_paths = [temp_path / row["file_name"] for row in rows]
+            chunk_paths = [temp_path / row["file_path"] for row in rows]
             self.assertTrue(all(path.exists() for path in chunk_paths))
             lengths = []
             for path in chunk_paths:
                 with path.open("rb") as handle:
                     lengths.append(len(AudioSegment.from_file(handle, format="wav")))
 
-            self.assertTrue(24_500 <= lengths[0] <= 25_500)
-            self.assertTrue(9_500 <= lengths[1] <= 11_500)
-            self.assertEqual(["speaker_A", "speaker_A"], [row["speaker_id"] for row in rows])
+            self.assertEqual([25_000, 10_000], lengths)
+            self.assertEqual(
+                [
+                    "dataset/audio/session_speaker_A_0.wav",
+                    "dataset/audio/session_speaker_A_1.wav",
+                ],
+                [row["file_path"] for row in rows],
+            )
+            self.assertEqual(["speaker_A", "speaker_A"], [row["speaker"] for row in rows])
+            self.assertEqual(["session.wav", "session.wav"], [row["original_file"] for row in rows])
+
+    def test_discover_pairs_reads_audio_and_json_dirs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            audio_dir = temp_path / "audio"
+            json_dir = temp_path / "json"
+            audio_dir.mkdir()
+            json_dir.mkdir()
+            (audio_dir / "sample.wav").write_bytes(b"RIFF")
+            (json_dir / "sample.json").write_text("[]", encoding="utf-8")
+
+            self.assertEqual(
+                [(audio_dir / "sample.wav", json_dir / "sample.json")],
+                discover_pairs(audio_dir, json_dir),
+            )
 
     def test_write_metadata_uses_expected_columns(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             metadata_path = Path(temp_dir) / "metadata.csv"
-            rows = [{"file_name": "dataset/audio/a.wav", "speaker_id": "spk1"}]
+            rows = [
+                {
+                    "file_path": "dataset/audio/a.wav",
+                    "speaker": "spk1",
+                    "original_file": "original.wav",
+                }
+            ]
 
             write_metadata(metadata_path, rows)
 
@@ -63,7 +91,7 @@ class ChunkAudioTests(unittest.TestCase):
                 reader = csv.DictReader(handle)
                 loaded_rows = list(reader)
 
-            self.assertEqual(["file_name", "speaker_id"], reader.fieldnames)
+            self.assertEqual(["file_path", "speaker", "original_file"], reader.fieldnames)
             self.assertEqual(rows, loaded_rows)
 
 

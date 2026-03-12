@@ -10,18 +10,14 @@ Install dependencies:
 pip install -r requirements.txt
 ```
 
-Chunk a single audio/JSON pair:
+Chunk matching `.wav` files from one directory using pyannote `.json` files from another:
 
 ```bash
 python chunk_audio.py \
-  --audio-file /path/to/audio.wav \
-  --diarization-file /path/to/audio.json
+  --audio-dir /path/to/audio_dir \
+  --json-dir /path/to/json_dir \
+  --output-chunks-dir /path/to/output_chunks_dir \
+  --metadata-path /path/to/metadata.csv
 ```
 
-Or process a directory that contains matching `file.wav` / `file.json` pairs:
-
-```bash
-python chunk_audio.py --input-dir /path/to/input
-```
-
-The script writes chunked audio to `dataset/audio/` by default and generates `metadata.csv` with `file_name` and `speaker_id` columns.
+The script writes chunks named like `original_speaker_0.wav`, force-splits speaker turns longer than 25 seconds into sequential 25-second pieces, skips final chunks shorter than 1 second, shows progress with `tqdm`, and generates `metadata.csv` with `file_path`, `speaker`, and `original_file` columns.

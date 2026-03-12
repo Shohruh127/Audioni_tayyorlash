@@ -3,21 +3,18 @@ from __future__ import annotations
 import argparse
 import csv
 import json
-import math
 import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from pydub import AudioSegment
-from pydub.silence import detect_silence
+from tqdm import tqdm
 
 
 MIN_CHUNK_MS = 1_000
 TARGET_CHUNK_MS = 25_000
-SPLIT_SEARCH_WINDOW_MS = 2_000
-MIN_SILENCE_MS = 300
 
 
 @dataclass(frozen=True)
@@ -29,19 +26,22 @@ class Segment:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Chunk WAV audio using diarization JSON metadata."
+        description="Slice WAV audio into diarization-based chunks."
     )
     parser.add_argument(
-        "--input-dir",
+        "--audio-dir",
         type=Path,
-        help="Directory containing matching .wav and .json files by basename.",
-    )
-    parser.add_argument("--audio-file", type=Path, help="Path to a single .wav file.")
-    parser.add_argument(
-        "--diarization-file", type=Path, help="Path to the diarization .json file."
+        required=True,
+        help="Directory containing input .wav files.",
     )
     parser.add_argument(
-        "--output-dir",
+        "--json-dir",
+        type=Path,
+        required=True,
+        help="Directory containing pyannote diarization .json files.",
+    )
+    parser.add_argument(
+        "--output-chunks-dir",
         type=Path,
         default=Path("dataset/audio"),
         help="Directory where chunked audio files will be written.",
@@ -50,15 +50,9 @@ def parse_args() -> argparse.Namespace:
         "--metadata-path",
         type=Path,
         default=Path("metadata.csv"),
-        help="CSV file to generate with file_name and speaker_id columns.",
+        help="CSV file to generate with file_path, speaker, original_file columns.",
     )
-    args = parser.parse_args()
-
-    if bool(args.input_dir) == bool(args.audio_file):
-        parser.error("Provide either --input-dir or --audio-file/--diarization-file.")
-    if args.audio_file and not args.diarization_file:
-        parser.error("--diarization-file is required when --audio-file is provided.")
-    return args
+    return parser.parse_args()
 
 
 def sanitize_for_filename(value: str) -> str:
@@ -160,74 +154,34 @@ def load_segments(diarization_path: Path) -> list[Segment]:
     return segments
 
 
-def resolve_silence_threshold(audio: AudioSegment) -> float:
-    """Choose a conservative silence threshold relative to the local audio level.
-
-    pydub's silence detection expects a dBFS cutoff. We bias the threshold about
-    16 dB below the local average loudness, while clamping it to a practical
-    range for typical spoken-word audio so quiet clips still detect silence
-    without treating normal speech as silence.
-    """
-    if not math.isfinite(audio.dBFS):
-        return -45.0
-    return max(-50.0, min(-10.0, audio.dBFS - 16.0))
-
-
-def choose_split_point(turn_audio: AudioSegment, local_start_ms: int, local_end_ms: int) -> int:
-    target_ms = local_start_ms + TARGET_CHUNK_MS
-    search_start = max(local_start_ms, target_ms - SPLIT_SEARCH_WINDOW_MS)
-    search_end = min(local_end_ms, target_ms + SPLIT_SEARCH_WINDOW_MS)
-    if search_end - search_start >= MIN_SILENCE_MS:
-        window_audio = turn_audio[search_start:search_end]
-        silence_ranges = detect_silence(
-            window_audio,
-            min_silence_len=MIN_SILENCE_MS,
-            silence_thresh=resolve_silence_threshold(window_audio),
-        )
-        if silence_ranges:
-            preferred_points = [
-                search_start + ((start + end) // 2)
-                for start, end in silence_ranges
-                if MIN_CHUNK_MS
-                <= search_start + ((start + end) // 2) - local_start_ms
-                <= TARGET_CHUNK_MS
-            ]
-            if preferred_points:
-                return min(preferred_points, key=lambda point: abs(point - target_ms))
-    return target_ms
-
-
 def split_segment(segment_audio: AudioSegment) -> list[AudioSegment]:
     if len(segment_audio) < MIN_CHUNK_MS:
         return []
 
     chunks: list[AudioSegment] = []
     local_start_ms = 0
-    local_end_ms = len(segment_audio)
+    total_duration_ms = len(segment_audio)
 
-    while local_end_ms - local_start_ms > TARGET_CHUNK_MS:
-        split_ms = choose_split_point(segment_audio, local_start_ms, local_end_ms)
-        if split_ms - local_start_ms < MIN_CHUNK_MS:
-            split_ms = min(local_end_ms, local_start_ms + TARGET_CHUNK_MS)
-        chunks.append(segment_audio[local_start_ms:split_ms])
-        local_start_ms = split_ms
+    while local_start_ms + TARGET_CHUNK_MS <= total_duration_ms:
+        chunks.append(segment_audio[local_start_ms : local_start_ms + TARGET_CHUNK_MS])
+        local_start_ms += TARGET_CHUNK_MS
 
-    remainder = segment_audio[local_start_ms:local_end_ms]
+    remainder = segment_audio[local_start_ms:total_duration_ms]
     if len(remainder) >= MIN_CHUNK_MS:
         chunks.append(remainder)
-    return [chunk for chunk in chunks if len(chunk) >= MIN_CHUNK_MS]
+    return chunks
 
 
 def process_pair(
     audio_path: Path,
     diarization_path: Path,
-    output_dir: Path,
+    output_chunks_dir: Path,
     metadata_base_dir: Path,
 ) -> list[dict[str, str]]:
     with audio_path.open("rb") as handle:
         audio = AudioSegment.from_file(handle, format="wav")
     segments = load_segments(diarization_path)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_chunks_dir.mkdir(parents=True, exist_ok=True)
 
     rows: list[dict[str, str]] = []
     chunk_indices: dict[str, int] = {}
@@ -242,62 +196,77 @@ def process_pair(
         for chunk in split_segment(segment_audio):
             chunk_index = chunk_indices.get(safe_speaker, 0)
             chunk_indices[safe_speaker] = chunk_index + 1
-            file_name = f"{stem}_{safe_speaker}_chunk{chunk_index}.wav"
-            chunk_path = output_dir / file_name
+            file_name = f"{stem}_{safe_speaker}_{chunk_index}.wav"
+            chunk_path = output_chunks_dir / file_name
             exported_file = chunk.export(chunk_path, format="wav")
             if exported_file is not None:
                 exported_file.close()
             rows.append(
                 {
-                    "file_name": os.path.relpath(chunk_path, metadata_base_dir).replace(
+                    "file_path": os.path.relpath(chunk_path, metadata_base_dir).replace(
                         os.sep, "/"
                     ),
-                    "speaker_id": speaker_label,
+                    "speaker": speaker_label,
+                    "original_file": audio_path.name,
                 }
             )
     return rows
 
 
-def discover_pairs(input_dir: Path) -> list[tuple[Path, Path]]:
+def discover_pairs(audio_dir: Path, json_dir: Path) -> list[tuple[Path, Path]]:
     pairs: list[tuple[Path, Path]] = []
-    for audio_path in sorted(input_dir.glob("*.wav")):
-        diarization_path = audio_path.with_suffix(".json")
+    for audio_path in sorted(audio_dir.glob("*.wav")):
+        diarization_path = json_dir / f"{audio_path.stem}.json"
         if not diarization_path.exists():
             raise FileNotFoundError(
                 f"Expected diarization file {diarization_path} for {audio_path.name}"
             )
         pairs.append((audio_path, diarization_path))
     if not pairs:
-        raise FileNotFoundError(f"No .wav files found in {input_dir}")
+        raise FileNotFoundError(f"No .wav files found in {audio_dir}")
     return pairs
 
 
-def write_metadata(metadata_path: Path, rows: Iterable[dict[str, str]]) -> None:
+def write_metadata(metadata_path: Path, rows: list[dict[str, str]]) -> None:
     metadata_path.parent.mkdir(parents=True, exist_ok=True)
     with metadata_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=["file_name", "speaker_id"])
+        writer = csv.DictWriter(handle, fieldnames=["file_path", "speaker", "original_file"])
         writer.writeheader()
         writer.writerows(rows)
+
+
+def append_metadata_row(metadata_path: Path, row: dict[str, str], write_header: bool) -> None:
+    metadata_path.parent.mkdir(parents=True, exist_ok=True)
+    with metadata_path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=["file_path", "speaker", "original_file"])
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 def main() -> int:
     args = parse_args()
     metadata_base_dir = args.metadata_path.resolve().parent
+    pairs = discover_pairs(args.audio_dir.resolve(), args.json_dir.resolve())
 
-    if args.input_dir:
-        pairs = discover_pairs(args.input_dir.resolve())
-    else:
-        pairs = [(args.audio_file.resolve(), args.diarization_file.resolve())]
+    metadata_path = args.metadata_path.resolve()
+    if metadata_path.exists():
+        metadata_path.unlink()
 
-    all_rows: list[dict[str, str]] = []
-    output_dir = args.output_dir.resolve()
-    for audio_path, diarization_path in pairs:
-        all_rows.extend(
-            process_pair(audio_path, diarization_path, output_dir, metadata_base_dir)
-        )
+    created_count = 0
+    write_header = True
+    output_chunks_dir = args.output_chunks_dir.resolve()
+    for audio_path, diarization_path in tqdm(pairs, desc="Chunking audio files"):
+        for row in process_pair(
+            audio_path, diarization_path, output_chunks_dir, metadata_base_dir
+        ):
+            append_metadata_row(metadata_path, row, write_header)
+            write_header = False
+            created_count += 1
 
-    write_metadata(args.metadata_path.resolve(), all_rows)
-    print(f"Created {len(all_rows)} chunks and wrote metadata to {args.metadata_path}")
+    if write_header:
+        write_metadata(metadata_path, [])
+    print(f"Created {created_count} chunks and wrote metadata to {args.metadata_path}")
     return 0
 
 
