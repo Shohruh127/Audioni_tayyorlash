@@ -104,7 +104,7 @@ def extract_time(data: dict[str, Any], prefix: str) -> int | None:
         "start": ("begin", "offset"),
         "end": ("finish", "stop"),
     }
-    for key in aliases[prefix]:
+    for key in aliases.get(prefix, ()):
         if key in data:
             return parse_timestamp(data[key])
     return None
