@@ -64,12 +64,29 @@ python chunk_audio.py \
   --metadata-path /path/to/metadata.csv
 The script writes chunks named like original_speaker_0.wav, force-splits speaker turns longer than 25 seconds into sequential 25-second pieces, skips final chunks shorter than 1 second, shows progress with tqdm, and generates metadata.csv with file_path, speaker, and original_file columns.
 
+Stage 4: Gemini Pseudo-Labeling
+Gemini-based batch transcription script for .wav chunks listed in metadata.csv.
+
+Setup
+Bash
+export GEMINI_API_KEY="your-api-key"
+Usage
+The script expects a metadata.csv file with the columns: file_path, speaker, original_file.
+Relative file_path values are resolved relative to the CSV file location. The script appends results to labeled_metadata.csv, skips already-transcribed file_path values (Idempotency), and deletes uploaded files from Gemini immediately after each request to avoid storage limits.
+
+Bash
+python generate_pseudo_labels.py /path/to/metadata.csv --output /path/to/labeled_metadata.csv
+Useful options:
+
+Bash
+python generate_pseudo_labels.py /path/to/metadata.csv --model gemini-3.1-pro-preview
 
 ---
 
 ### Keyingi qadam
 
-Fayllarni saqlab bo'lgach, ularni yana Git'ga qo'shib, konfliktni yoping:
+Ushbu o'zgarishlarni saqlab, loyihani Git'ga mahkamlang:
+
 ```bash
 git add .
-git commit -m "chore: resolve merge conflicts and integrate Stage 3 pipeline"
+git commit -m "feat: resolve merge conflicts and integrate Stage 4 (Gemini Transcriber) into pipeline"
