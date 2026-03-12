@@ -4,7 +4,19 @@ import argparse
 import gc
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+
+
+MODEL_ID = "pyannote/speaker-diarization-3.1"
+
+
+@dataclass
+class PipelineContext:
+    pipeline: Any
+    device: Any
+    torch_module: Any
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,7 +43,9 @@ def parse_args() -> argparse.Namespace:
 
 
 def get_huggingface_token() -> str:
-    token = os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
+    token = os.getenv("HF_TOKEN")
+    if token is None:
+        token = os.getenv("HUGGINGFACE_TOKEN")
     if token:
         return token
     raise EnvironmentError(
@@ -39,7 +53,8 @@ def get_huggingface_token() -> str:
     )
 
 
-def diarization_to_records(diarization) -> list[dict[str, float | str]]:
+def diarization_to_records(diarization: Any) -> list[dict[str, float | str]]:
+    """Convert a pyannote diarization result into JSON-serializable records."""
     records = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
         records.append(
@@ -56,17 +71,47 @@ def get_output_path(audio_path: Path, output_dir: Path) -> Path:
     return output_dir / f"{audio_path.stem}.json"
 
 
-def load_pipeline(token: str):
+def load_pipeline(token: str) -> PipelineContext:
     import torch
     from pyannote.audio import Pipeline
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=token,
+        MODEL_ID,
+        token=token,
     )
     pipeline.to(device)
-    return pipeline, device, torch
+    return PipelineContext(pipeline=pipeline, device=device, torch_module=torch)
+
+
+def should_clear_cache(device: Any, cache_clear_every: int, processed: int) -> bool:
+    return (
+        device.type == "cuda"
+        and processed > 0
+        and cache_clear_every > 0
+        and processed % cache_clear_every == 0
+    )
+
+
+def get_wav_files(input_dir: Path) -> list[Path]:
+    wav_files = sorted(
+        audio_file
+        for audio_file in input_dir.iterdir()
+        if audio_file.is_file() and audio_file.suffix.lower() == ".wav"
+    )
+    if not wav_files:
+        raise FileNotFoundError(f"No .wav files found in {input_dir}")
+
+    stems = {}
+    for audio_path in wav_files:
+        existing = stems.get(audio_path.stem)
+        if existing is not None:
+            raise ValueError(
+                f"Multiple audio files map to the same output name: {existing.name} and {audio_path.name}"
+            )
+        stems[audio_path.stem] = audio_path
+
+    return wav_files
 
 
 def process_folder(
@@ -75,29 +120,34 @@ def process_folder(
     cache_clear_every: int,
 ) -> int:
     token = get_huggingface_token()
-    pipeline, device, torch = load_pipeline(token)
+    pipeline_context = load_pipeline(token)
 
-    wav_files = sorted(input_dir.glob("*.wav"))
-    if not wav_files:
-        raise FileNotFoundError(f"No .wav files found in {input_dir}")
+    wav_files = get_wav_files(input_dir)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     processed = 0
     for audio_path in wav_files:
-        diarization = pipeline(str(audio_path))
-        records = diarization_to_records(diarization)
+        try:
+            diarization = pipeline_context.pipeline(audio_path)
+            records = diarization_to_records(diarization)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to diarize audio file: {audio_path}. "
+                "Check that the file is a readable WAV recording supported by the local "
+                f"audio backend and model pipeline. Original error: {exc}"
+            ) from exc
 
         output_path = get_output_path(audio_path, output_dir)
-        output_path.write_text(json.dumps(records, indent=2), encoding="utf-8")
+        output_path.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
 
         processed += 1
-        if device.type == "cuda" and cache_clear_every > 0 and processed % cache_clear_every == 0:
-            torch.cuda.empty_cache()
+        if should_clear_cache(pipeline_context.device, cache_clear_every, processed):
+            pipeline_context.torch_module.cuda.empty_cache()
             gc.collect()
 
-    if device.type == "cuda":
-        torch.cuda.empty_cache()
+    if pipeline_context.device.type == "cuda":
+        pipeline_context.torch_module.cuda.empty_cache()
     gc.collect()
     return processed
 
