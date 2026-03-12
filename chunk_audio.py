@@ -13,6 +13,7 @@ from pydub import AudioSegment
 from tqdm import tqdm
 
 
+# Keep Whisper chunks comfortably under the 30-second context window.
 MIN_CHUNK_MS = 1_000
 TARGET_CHUNK_MS = 25_000
 
@@ -119,6 +120,7 @@ def extract_speaker_id(data: dict[str, Any]) -> str | None:
 
 
 def _collect_segments(payload: Any) -> list[Segment]:
+    """Recursively extract diarization segments from flexible JSON structures."""
     found: list[Segment] = []
 
     def visit(node: Any) -> None:
@@ -155,6 +157,7 @@ def load_segments(diarization_path: Path) -> list[Segment]:
 
 
 def split_segment(segment_audio: AudioSegment) -> list[AudioSegment]:
+    """Split a speaker turn into strict sequential 25-second chunks."""
     if len(segment_audio) < MIN_CHUNK_MS:
         return []
 
@@ -178,6 +181,7 @@ def process_pair(
     output_chunks_dir: Path,
     metadata_base_dir: Path,
 ) -> list[dict[str, str]]:
+    """Slice one WAV/JSON pair and return metadata rows for emitted chunks."""
     with audio_path.open("rb") as handle:
         audio = AudioSegment.from_file(handle, format="wav")
     segments = load_segments(diarization_path)
@@ -196,6 +200,7 @@ def process_pair(
         for chunk in split_segment(segment_audio):
             chunk_index = chunk_indices.get(safe_speaker, 0)
             chunk_indices[safe_speaker] = chunk_index + 1
+            # Use a stable, model-friendly file name for downstream training jobs.
             file_name = f"{stem}_{safe_speaker}_{chunk_index}.wav"
             chunk_path = output_chunks_dir / file_name
             exported_file = chunk.export(chunk_path, format="wav")
@@ -249,6 +254,7 @@ def main() -> int:
     metadata_base_dir = args.metadata_path.resolve().parent
     pairs = discover_pairs(args.audio_dir.resolve(), args.json_dir.resolve())
 
+    # Recreate the metadata file on each run so repeated executions stay deterministic.
     metadata_path = args.metadata_path.resolve()
     if metadata_path.exists():
         metadata_path.unlink()
