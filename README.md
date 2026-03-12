@@ -1,32 +1,32 @@
 # Audioni_tayyorlash
 
-Batch ASR pseudo-label generation script for audio chunks listed in `metadata.csv`.
+Gemini-based batch transcription script for `.wav` chunks listed in `metadata.csv`.
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
+export GEMINI_API_KEY="your-api-key"
 ```
 
 ## Generate pseudo-labels
 
-The script expects a `metadata.csv` file with a `file_name` column that points to `.wav`
-chunks. Relative paths are resolved relative to the CSV file location.
+The script expects a `metadata.csv` file with the columns:
+
+- `file_path`
+- `speaker`
+- `original_file`
+
+Relative `file_path` values are resolved relative to the CSV file location. The script
+appends results to `labeled_metadata.csv`, skips already-transcribed `file_path` values,
+and deletes uploaded files from Gemini immediately after each request.
 
 ```bash
 python generate_pseudo_labels.py /path/to/metadata.csv --output /path/to/labeled_metadata.csv
 ```
 
-By default the script:
-
-- uses `faster-whisper` with the `large-v3` model
-- runs with `compute_type="float16"`
-- lowercases the transcription and removes punctuation
-- writes `file_name`, `transcription`, and `confidence_score`
-- reloads the model after each logical batch to reduce long-running GPU memory buildup
-
 Useful options:
 
 ```bash
-python generate_pseudo_labels.py /path/to/metadata.csv --batch-size 8 --device cuda
+python generate_pseudo_labels.py /path/to/metadata.csv --model gemini-3.1-pro-preview
 ```
