@@ -171,7 +171,7 @@ def process_directory(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Batch convert audio files to 16kHz, 16-bit PCM mono WAV files."
+        description="Batch convert audio files to 16 kHz, 16-bit PCM mono WAV files."
     )
     parser.add_argument("input_dir", help="Directory containing source audio files.")
     parser.add_argument("output_dir", help="Directory where standardized WAV files will be written.")
