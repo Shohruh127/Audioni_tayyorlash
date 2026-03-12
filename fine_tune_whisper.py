@@ -61,7 +61,8 @@ class WhisperDataCollator:
         labels_batch = self.processor.tokenizer.pad(label_features, return_tensors="pt")
         labels = labels_batch["input_ids"].masked_fill(labels_batch.attention_mask.ne(1), -100)
 
-        if labels.size(1) > 0 and (labels[:, 0] == self.decoder_start_token_id).all().item():
+        starts_with_decoder_token = labels.size(1) > 0 and (labels[:, 0] == self.decoder_start_token_id).all().item()
+        if starts_with_decoder_token:
             labels = labels[:, 1:]
 
         batch["labels"] = labels
@@ -152,7 +153,7 @@ def main() -> None:
     if not data_dir.exists():
         raise SystemExit(f"Dataset directory does not exist: {data_dir}")
     if not 0 < args.validation_size < 1:
-        raise SystemExit("--validation-size must be between 0 and 1.")
+        raise SystemExit("--validation-size must be strictly between 0 and 1 (exclusive).")
 
     runtime = load_runtime_dependencies()
     runtime["set_seed"](args.seed)
@@ -190,11 +191,12 @@ def main() -> None:
         desc="Preparing validation split",
     )
 
-    model.config.forced_decoder_ids = processor.get_decoder_prompt_ids(language=args.language, task=args.task)
+    decoder_prompt_ids = processor.get_decoder_prompt_ids(language=args.language, task=args.task)
+    model.config.forced_decoder_ids = decoder_prompt_ids
     model.config.suppress_tokens = []
     model.generation_config.language = args.language
     model.generation_config.task = args.task
-    model.generation_config.forced_decoder_ids = model.config.forced_decoder_ids
+    model.generation_config.forced_decoder_ids = decoder_prompt_ids
     model.generation_config.suppress_tokens = []
     model.config.use_cache = False
 

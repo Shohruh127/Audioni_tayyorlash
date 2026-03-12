@@ -1,8 +1,8 @@
-torch
-transformers
-accelerate
-datasets
-evaluate
-jiwer
-peft
-soundfile
+torch==2.10.0
+transformers==4.57.6
+accelerate==1.13.0
+datasets==4.7.0
+evaluate==0.4.6
+jiwer==4.0.0
+peft==0.18.1
+soundfile==0.13.1
